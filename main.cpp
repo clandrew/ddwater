@@ -213,10 +213,10 @@ float SanitizedLoadFromHeightmap(std::vector<float> const& heightMap, int x, int
 
 UINT SanitizedLoadFromRgbUINT(std::vector<UINT> const& rgb, int x, int y)
 {
-	if (x < 0) return 0;
-	if (x >= 640) return 0;
-	if (y < 0) return 0;
-	if (y >= 448) return 0;
+	if (x < 0) x = 0;
+	if (x >= 640) x = 640 - 1;
+	if (y < 0) y = 0;
+	if (y >= 448) y = 448 - 1;
 
 	return rgb[y * 640 + x];
 }
@@ -310,17 +310,25 @@ void DrawImpl(LPDIRECTDRAWSURFACE lpSurface)
 					// Just water
 
 					// Update and load from heightmap
-					float tint = ComputeHeightmapValue(x, y);
-					tint = max(tint, -4);
-					tint = min(tint, 4);
+					float heightmap = ComputeHeightmapValue(x, y);
+					float tint = heightmap;
+
+					// tint goes from [-10, 10]
+					tint = max(tint, -10);
+					tint = min(tint, 10);
+
+					// tint goes from [0, 20]
+					tint += 10.0f;
+
+					// tint goes from [0, 1]
+					tint /= 20.0f;
+
+					// If positive heightmap, add white. If negative, add black.
+					Color3F tintColor = { tint, tint, tint };
 
 					// Load the blue color
 					Color3F water = c_waterColor;
-
-					// Lighten/darken the water based on heightmap
-					water.R += tint;
-					water.G += tint;
-					water.B += tint;
+					water.Blend(tintColor, 0.05f);
 
 					Color3U components = Color3FToColor3U(water);
 					UINT resultRGBA = Color3UToRgbUINT(components);
