@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "resource.h"
+#include "ColorConversions.h"
 
 #define MAX_LOADSTRING 100
 
@@ -24,11 +25,16 @@ ComPtr<IWICImagingFactory> g_wicImagingFactory;
 bool graphicsLoaded{};
 bool isRunning = true;
 
+// Constants
+const float c_waterAlpha = 0.6f;
+Color3F c_waterColor = { 0.0f, 0.176f, 0.357f };
+const float c_dampeningFactor = 0.995f;
+
 struct LoadedImage
 {
 	UINT Width, Height;
 	std::vector<UINT> ImageData;
-} g_foregroundImage;
+} g_foregroundImage, g_underwaterMask;
 
 std::vector<float> g_heightMaps[2]{};
 UINT g_currentHeightmapIndex = 0;
@@ -135,6 +141,8 @@ void DirectDrawInit()
 	VerifyHR(g_lpPrimary->SetClipper(g_lpClipper.Get()));
 
 	g_foregroundImage = LoadImageFile(L"fg.png");
+	g_underwaterMask = LoadImageFile(L"underwater.png");
+	g_wicImagingFactory.Reset();
 
 	for (int i = 0; i < 2; ++i)
 	{
@@ -190,34 +198,46 @@ void Draw()
 	}
 }
 
-float SanitizedLoad(std::vector<float> const& heightMap, int x, int y)
+float SanitizedLoadFromHeightmap(std::vector<float> const& heightMap, int x, int y)
 {
 	if (x < 0) return 0;
 	if (x >= 640) return 0;
 	if (y < 0) return 0;
 	if (y >= 448) return 0;
 
-	if (g_foregroundImage.ImageData[y * 640 + x] != 0) return 0;
+	// Don't load heightmap from where it doesn't apply
+	if (g_underwaterMask.ImageData[y * 640 + x] == 0) return 0;
 
 	return heightMap[y * 640 + x];
 }
 
-UINT HeightMapValueToDebugRgb(float heightMap)
+UINT SanitizedLoadFromRgbUINT(std::vector<UINT> const& rgb, int x, int y)
 {
-	heightMap = abs(heightMap);
-	heightMap = min(heightMap, 255);
-	unsigned char channel = static_cast<unsigned char>(heightMap);
+	if (x < 0) return 0;
+	if (x >= 640) return 0;
+	if (y < 0) return 0;
+	if (y >= 448) return 0;
 
-	UINT rgba = 0;
-	rgba |= 0xFF;
-	rgba <<= 8;
-	rgba |= channel;
-	rgba <<= 8;
-	rgba |= channel;
-	rgba <<= 8;
-	rgba |= channel;
+	return rgb[y * 640 + x];
+}
 
-	return rgba;
+float ComputeHeightmapValue(int x, int y)
+{
+	std::vector<float>& currentHeightmap = g_heightMaps[g_currentHeightmapIndex];
+	std::vector<float>& otherHeightmap = g_heightMaps[1 - g_currentHeightmapIndex];
+
+	float neighbor0 = SanitizedLoadFromHeightmap(otherHeightmap, x - 1, y);
+	float neighbor1 = SanitizedLoadFromHeightmap(otherHeightmap, x + 1, y);
+	float neighbor2 = SanitizedLoadFromHeightmap(otherHeightmap, x, y - 1);
+	float neighbor3 = SanitizedLoadFromHeightmap(otherHeightmap, x, y + 1);
+	float neighborSum = neighbor0 + neighbor1 + neighbor2 + neighbor3;
+
+	float& thisPixelInHeightmap = currentHeightmap[640 * y + x];
+	float previousVal = thisPixelInHeightmap;
+
+	float newVal = (neighborSum / 2.0f - previousVal) * c_dampeningFactor;
+	thisPixelInHeightmap = newVal;
+	return thisPixelInHeightmap;
 }
 
 void DrawImpl(LPDIRECTDRAWSURFACE lpSurface)
@@ -242,7 +262,7 @@ void DrawImpl(LPDIRECTDRAWSURFACE lpSurface)
 
 		const int nBytesPerPixel = ddpf.dwRGBBitCount / 8;
 		unsigned char* pVideoMemory = (unsigned char*) ddsd.lpSurface;
-		const float dampeningFactor = 0.995f;
+
 
 		for (int x = 0; x < 640; ++x)
 		{
@@ -250,37 +270,62 @@ void DrawImpl(LPDIRECTDRAWSURFACE lpSurface)
 			{
 				// Copy from foreground image
 				UINT fgImageRgb = g_foregroundImage.ImageData[y * 640 + x];
+				UINT underwaterRgb = g_underwaterMask.ImageData[y * 640 + x];
 
 				unsigned char* pPixelMemory = pVideoMemory + (x * nBytesPerPixel) + (y * ddsd.lPitch);
 				UINT* pPixel = reinterpret_cast<UINT*>(pPixelMemory);
 
-				if (fgImageRgb)
+				if (fgImageRgb && !underwaterRgb)
 				{
+					// Just foreground
 					*pPixel = fgImageRgb;
 				}
-				else
+				else if (fgImageRgb && underwaterRgb)
 				{
-					// Load from water heightmap
-					// Compute the average of our neighbors in the other buffer
-					std::vector<float>& currentHeightmap = g_heightMaps[g_currentHeightmapIndex];
-					std::vector<float>& otherHeightmap = g_heightMaps[1 - g_currentHeightmapIndex];
+					// Foreground and water
 
-					float neighbor0 = SanitizedLoad(otherHeightmap, x - 1, y);
-					float neighbor1 = SanitizedLoad(otherHeightmap, x + 1, y);
-					float neighbor2 = SanitizedLoad(otherHeightmap, x, y - 1);
-					float neighbor3 = SanitizedLoad(otherHeightmap, x, y + 1);
-					float neighborSum = neighbor0 + neighbor1 + neighbor2 + neighbor3;
+					// Update and load from heightmap
+					float disp = ComputeHeightmapValue(x, y);
+					disp /= 2.0f;
+					disp = max(disp, -4);
+					disp = min(disp, 4);
 
-					float& thisPixelInHeightmap = currentHeightmap[640 * y + x];
-					float previousVal = thisPixelInHeightmap;
+					// Resample with heightmap applied
+					float adjustedX = x;
+					float adjustedY = y + disp;
+					UINT resample = SanitizedLoadFromRgbUINT(g_foregroundImage.ImageData, adjustedX, adjustedY);
 
-					float newVal = (neighborSum / 2.0f - previousVal) * dampeningFactor;
-					thisPixelInHeightmap = newVal;
+					// Blend resampled fg with a blue color
+					Color3U fgImageComponents = RgbUINTToColor3U(resample);
+					Color3F fgImageFloat = Color3UToColor3F(fgImageComponents);
+					fgImageFloat.Blend(c_waterColor, c_waterAlpha);
 
-					// Have some debug way of displaying the height map
-					UINT heightmapDebugRgb = HeightMapValueToDebugRgb(thisPixelInHeightmap);
+					fgImageComponents = Color3FToColor3U(fgImageFloat);
+					UINT resultRGBA = Color3UToRgbUINT(fgImageComponents);
 
-					*pPixel = heightmapDebugRgb;
+					*pPixel = resultRGBA;
+				}
+				else if (underwaterRgb)
+				{
+					// Just water
+
+					// Update and load from heightmap
+					float tint = ComputeHeightmapValue(x, y);
+					tint = max(tint, -4);
+					tint = min(tint, 4);
+
+					// Load the blue color
+					Color3F water = c_waterColor;
+
+					// Lighten/darken the water based on heightmap
+					water.R += tint;
+					water.G += tint;
+					water.B += tint;
+
+					Color3U components = Color3FToColor3U(water);
+					UINT resultRGBA = Color3UToRgbUINT(components);
+					*pPixel = resultRGBA;
+
 				}
 			}
 		}
@@ -348,7 +393,6 @@ int APIENTRY WinMain(HINSTANCE hInstance,
 	}
 
 	// Perform application cleanup
-	g_wicImagingFactory.Reset();
 	g_lpBack.Reset();
 
 	if (g_lpPrimary)
