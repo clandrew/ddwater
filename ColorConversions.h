@@ -23,6 +23,44 @@ struct Color3U
 	unsigned char R;
 	unsigned char G;
 	unsigned char B;
+
+	int Difference(const Color3U& other)
+	{
+		int d = 0;
+		d += R >= other.R ? R - other.R : other.R - R;
+		d += G >= other.G ? G - other.G : other.G - G;
+		d += B >= other.B ? B - other.B : other.B - B;
+		return d;
+	}
+
+	void QuantizeBlue()
+	{
+		static const Color3U pallette[] =
+		{
+			{ 0x0, 0x15, 0x29 },
+			{ 0x0, 0x2d, 0x5a },
+			{ 0x14, 0x53, 0x92 },
+			{ 0x20, 0x6d, 0xbb },
+			{ 0x4e, 0xa7, 0xff },
+			{ 0xaa, 0xd5, 0xff }
+		};
+
+		int bestMatchIndex = 0;
+		int bestMatchDistance = Difference(pallette[0]);
+		for (int i = 1; i < _countof(pallette); ++i)
+		{
+			int distance = Difference(pallette[i]);
+			if (distance < bestMatchDistance)
+			{
+				bestMatchDistance = distance;
+				bestMatchIndex = i;
+			}
+		}
+
+		R = pallette[bestMatchIndex].R;
+		G = pallette[bestMatchIndex].G;
+		B = pallette[bestMatchIndex].B;
+	}
 };
 
 struct Color3F

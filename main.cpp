@@ -32,6 +32,7 @@ Color3F c_waterColor = { 0.0f, 0.176f, 0.357f };
 const float c_dampeningFactor = 0.98f;
 const float c_dampeningClamp = 0.5f;
 const float sc_rainHeightmapInitAmount = 100.0f;
+const int c_numRaindrops = 100;
 
 struct LoadedImage
 {
@@ -169,7 +170,7 @@ void DirectDrawInit()
 	}
 
 	// Add raindrop
-	for (int i=0; i<100; ++i)
+	for (int i=0; i<c_numRaindrops; ++i)
 	{
 		Raindrop r{};
 		r.AnimationIndex = rand() % Raindrop::sc_actualFrameLimit;
