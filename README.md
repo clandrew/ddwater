@@ -7,7 +7,8 @@ It uses the '[two buffer trick](https://www.gamedev.net/articles/programming/gra
 Notes:
 * The application runs in windowed mode.
 * It suspends (stops drawing) when the window isn't active, and resumes when the window is active again.
-* The display is at a 640x448 fixed logical resolution. That said, you get swapchain scaling if the window is scaled.
+* The display is at a 640x448 fixed logical resolution. 
+  * That said, you get swapchain scaling if the window is scaled.
 
 ![Example image](https://raw.githubusercontent.com/clandrew/ddwater/master/Demo/Animation.gif "Example image.")
 
@@ -22,4 +23,4 @@ The source code is organized as a Visual Studio 2019 built for x86-64 architectu
 
 Images get loaded using WIC.
 
-The program uses WRL COM object wrappers, which might prevent it from being used on very old OS. Admittedly, it was weird using those wrappers alongside DirectDraw.
+The program uses WRL COM object wrappers, which might prevent it from being used on very old OS. Yeah, it was weird using those wrappers alongside DirectDraw.
