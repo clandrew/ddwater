@@ -9,7 +9,7 @@ Notes:
 * It suspends (stops drawing) when the window isn't active, and resumes when the window is active again.
 * The display is at a 640x448 fixed logical resolution. That said, you get swapchain scaling if the window is scaled.
 
-![Example image](https://raw.githubusercontent.com/clandrew/fwater/master/Demo/Animation.gif "Example image.")
+![Example image](https://raw.githubusercontent.com/clandrew/ddwater/master/Demo/Animation.gif "Example image.")
 
 ## Controls
 
