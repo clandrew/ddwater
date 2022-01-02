@@ -374,7 +374,7 @@ void DrawImpl(LPDIRECTDRAWSURFACE lpSurface)
 					// Load the blue color
 					Color3F water = c_waterColor;
 					Color3F tintColor = HeightmapValueToTintColor(heightmap);
-					water.Blend(tintColor, 0.15f);
+					water.Blend(tintColor, 0.1f);
 
 					Color3U underwaterComponentsU = RgbUINTToColor3U(underwaterRgb);
 					Color3F underwaterComponentsF = Color3UToColor3F(underwaterComponentsU);
