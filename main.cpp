@@ -33,6 +33,7 @@ const float c_dampeningFactor = 0.98f;
 const float c_dampeningClamp = 0.5f;
 const float sc_rainHeightmapInitAmount = 100.0f;
 const int c_numRaindrops = 100;
+int c_heightmapPrimeFrames = 75;
 
 struct LoadedImage
 {
@@ -117,6 +118,40 @@ LoadedImage LoadImageFile(std::wstring fileName)
 	return l;
 }
 
+float SanitizedLoadFromHeightmap(std::vector<float> const& heightMap, int x, int y)
+{
+	if (x < 0) return 0;
+	if (x >= 640) return 0;
+	if (y < 0) return 0;
+	if (y >= 448) return 0;
+
+	// Don't load heightmap from where it doesn't apply
+	if (g_underwaterMask.ImageData[y * 640 + x] == 0) return 0;
+
+	return heightMap[y * 640 + x];
+}
+
+float ComputeHeightmapValue(int x, int y)
+{
+	std::vector<float>& currentHeightmap = g_heightMaps[g_currentHeightmapIndex];
+	std::vector<float>& otherHeightmap = g_heightMaps[1 - g_currentHeightmapIndex];
+
+	float neighbor0 = SanitizedLoadFromHeightmap(otherHeightmap, x - 1, y);
+	float neighbor1 = SanitizedLoadFromHeightmap(otherHeightmap, x + 1, y);
+	float neighbor2 = SanitizedLoadFromHeightmap(otherHeightmap, x, y - 1);
+	float neighbor3 = SanitizedLoadFromHeightmap(otherHeightmap, x, y + 1);
+	float neighborSum = neighbor0 + neighbor1 + neighbor2 + neighbor3;
+
+	float& thisPixelInHeightmap = currentHeightmap[640 * y + x];
+	float previousVal = thisPixelInHeightmap;
+
+	float newVal = (neighborSum / 2.0f - previousVal) * c_dampeningFactor;
+	if (abs(newVal) < c_dampeningClamp) newVal = 0;
+
+	thisPixelInHeightmap = newVal;
+	return thisPixelInHeightmap;
+}
+
 void DirectDrawInit()
 {
 	HRESULT hr = 0;
@@ -178,6 +213,42 @@ void DirectDrawInit()
 		r.DestY = rand() % 448;
 		g_raindrops.push_back(r);
 	}
+
+	for (int i = 0; i < c_heightmapPrimeFrames; ++i)
+	{
+		for (int x = 0; x < 640; ++x)
+		{
+			for (int y = 0; y < 448; ++y)
+			{
+				ComputeHeightmapValue(x, y);
+			}
+		}
+		for (int i = 0; i < g_raindrops.size(); ++i)
+		{
+			Raindrop& r = g_raindrops[i];
+
+			assert(r.AnimationIndex <= Raindrop::sc_actualFrameLimit);
+
+			int logicalFrame = r.AnimationIndex / Raindrop::sc_animationRate;
+
+
+			if (logicalFrame == Raindrop::sc_logicalFrameLimit - 1)
+			{
+				// Plot heightmap
+				g_heightMaps[g_currentHeightmapIndex][r.DestY * 640 + r.DestX] = sc_rainHeightmapInitAmount;
+
+				// Kick off raindrop in different location
+				r.AnimationIndex = 0;
+				r.DestX = rand() % 640;
+				r.DestY = rand() % 448;
+			}
+			else
+			{
+				r.AnimationIndex++;
+			}
+		}
+		g_currentHeightmapIndex = 1 - g_currentHeightmapIndex;
+	}
 }
 
 void Draw()
@@ -228,19 +299,6 @@ void Draw()
 	}
 }
 
-float SanitizedLoadFromHeightmap(std::vector<float> const& heightMap, int x, int y)
-{
-	if (x < 0) return 0;
-	if (x >= 640) return 0;
-	if (y < 0) return 0;
-	if (y >= 448) return 0;
-
-	// Don't load heightmap from where it doesn't apply
-	if (g_underwaterMask.ImageData[y * 640 + x] == 0) return 0;
-
-	return heightMap[y * 640 + x];
-}
-
 UINT SanitizedLoadFromRgbUINT(std::vector<UINT> const& rgb, int x, int y)
 {
 	if (x < 0) x = 0;
@@ -249,27 +307,6 @@ UINT SanitizedLoadFromRgbUINT(std::vector<UINT> const& rgb, int x, int y)
 	if (y >= 448) y = 448 - 1;
 
 	return rgb[y * 640 + x];
-}
-
-float ComputeHeightmapValue(int x, int y)
-{
-	std::vector<float>& currentHeightmap = g_heightMaps[g_currentHeightmapIndex];
-	std::vector<float>& otherHeightmap = g_heightMaps[1 - g_currentHeightmapIndex];
-
-	float neighbor0 = SanitizedLoadFromHeightmap(otherHeightmap, x - 1, y);
-	float neighbor1 = SanitizedLoadFromHeightmap(otherHeightmap, x + 1, y);
-	float neighbor2 = SanitizedLoadFromHeightmap(otherHeightmap, x, y - 1);
-	float neighbor3 = SanitizedLoadFromHeightmap(otherHeightmap, x, y + 1);
-	float neighborSum = neighbor0 + neighbor1 + neighbor2 + neighbor3;
-
-	float& thisPixelInHeightmap = currentHeightmap[640 * y + x];
-	float previousVal = thisPixelInHeightmap;
-
-	float newVal = (neighborSum / 2.0f - previousVal) * c_dampeningFactor;
-	if (abs(newVal) < c_dampeningClamp) newVal = 0;
-
-	thisPixelInHeightmap = newVal;
-	return thisPixelInHeightmap;
 }
 
 Color3F HeightmapValueToTintColor(float heightmap)
