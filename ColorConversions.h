@@ -38,6 +38,13 @@ struct Color3F
 		G = (invWaterAlpha * G) + (otherColorAlpha * otherColor.G);
 		B = (invWaterAlpha * B) + (otherColorAlpha * otherColor.B);
 	}
+
+	void Screen(Color3F const& otherColor)
+	{
+		R = 1 - ((1.0f - R) * (1.0f - otherColor.R));
+		G = 1 - ((1.0f - G) * (1.0f - otherColor.G));
+		B = 1 - ((1.0f - B) * (1.0f - otherColor.B));
+	}
 };
 
 Color3U RgbUINTToColor3U(UINT rgb)

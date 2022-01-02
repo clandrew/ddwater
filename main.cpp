@@ -23,21 +23,37 @@ ComPtr<IDirectDrawClipper> g_lpClipper;
 ComPtr<IWICImagingFactory> g_wicImagingFactory;
 
 bool graphicsLoaded{};
+bool isActive = false;
 bool isRunning = true;
 
 // Constants
 const float c_waterAlpha = 0.6f;
 Color3F c_waterColor = { 0.0f, 0.176f, 0.357f };
-const float c_dampeningFactor = 0.995f;
+const float c_dampeningFactor = 0.98f;
+const float c_dampeningClamp = 0.5f;
+const float sc_rainHeightmapInitAmount = 100.0f;
 
 struct LoadedImage
 {
 	UINT Width, Height;
 	std::vector<UINT> ImageData;
-} g_foregroundImage, g_underwaterMask;
+} g_foregroundImage, g_underwaterMask, g_rainImage;
 
 std::vector<float> g_heightMaps[2]{};
 UINT g_currentHeightmapIndex = 0;
+UINT g_logicalFrameCounter = 0;
+
+struct Raindrop
+{
+	int DestX;
+	int DestY;
+	int AnimationIndex;
+	static const int sc_logicalFrameLimit = 7;
+	static const int sc_animationRate = 1;
+	static const int sc_actualFrameLimit = sc_logicalFrameLimit * sc_animationRate;
+};
+
+std::vector<Raindrop> g_raindrops;
 
 // Forward declarations of functions included in this code module:
 ATOM				MyRegisterClass(HINSTANCE hInstance);
@@ -142,11 +158,24 @@ void DirectDrawInit()
 
 	g_foregroundImage = LoadImageFile(L"fg.png");
 	g_underwaterMask = LoadImageFile(L"underwater.png");
+	g_rainImage = LoadImageFile(L"Rain.png");
 	g_wicImagingFactory.Reset();
+
+	srand(0);
 
 	for (int i = 0; i < 2; ++i)
 	{
 		g_heightMaps[i].resize(640 * 448);
+	}
+
+	// Add raindrop
+	for (int i=0; i<100; ++i)
+	{
+		Raindrop r{};
+		r.AnimationIndex = rand() % Raindrop::sc_actualFrameLimit;
+		r.DestX = rand() % 640;
+		r.DestY = rand() % 448;
+		g_raindrops.push_back(r);
 	}
 }
 
@@ -236,8 +265,40 @@ float ComputeHeightmapValue(int x, int y)
 	float previousVal = thisPixelInHeightmap;
 
 	float newVal = (neighborSum / 2.0f - previousVal) * c_dampeningFactor;
+	if (abs(newVal) < c_dampeningClamp) newVal = 0;
+
 	thisPixelInHeightmap = newVal;
 	return thisPixelInHeightmap;
+}
+
+Color3F HeightmapValueToTintColor(float heightmap)
+{
+	float tint = heightmap;
+
+	// tint goes from [-10, 10]
+	tint = max(tint, -10);
+	tint = min(tint, 10);
+
+	// tint goes from [0, 20]
+	tint += 10.0f;
+
+	// tint goes from [0, 1]
+	tint /= 20.0f;
+
+	// If positive heightmap, add white. If negative, add black.
+	Color3F tintColor = { tint, tint, tint };
+	return tintColor;
+}
+
+float HeightmapValueToDisp(float heightmap)
+{
+	float disp = heightmap;
+
+	// disp goes from -4, to 4
+	disp = max(disp, -4);
+	disp = min(disp, 4);
+
+	return disp;
 }
 
 void DrawImpl(LPDIRECTDRAWSURFACE lpSurface)
@@ -257,50 +318,50 @@ void DrawImpl(LPDIRECTDRAWSURFACE lpSurface)
 
 	VerifyHR(lpSurface->Lock(NULL, &ddsd, DDLOCK_SURFACEMEMORYPTR | DDLOCK_WAIT, NULL));
 	{
-		int x = 0;
-		int y = 0;
-
 		const int nBytesPerPixel = ddpf.dwRGBBitCount / 8;
 		unsigned char* pVideoMemory = (unsigned char*) ddsd.lpSurface;
-
 
 		for (int x = 0; x < 640; ++x)
 		{
 			for (int y = 0; y < 448; ++y)
 			{
+				// Update and load from heightmap
+				float heightmap = ComputeHeightmapValue(x, y);
+
+				// Sample from foreground image. Might be a resample with disp
+				float disp = HeightmapValueToDisp(heightmap);
+				float adjustedX = x;
+				float adjustedY = y + disp;
+				UINT resample = SanitizedLoadFromRgbUINT(g_foregroundImage.ImageData, adjustedX, adjustedY);
+
 				// Copy from foreground image
-				UINT fgImageRgb = g_foregroundImage.ImageData[y * 640 + x];
 				UINT underwaterRgb = g_underwaterMask.ImageData[y * 640 + x];
 
 				unsigned char* pPixelMemory = pVideoMemory + (x * nBytesPerPixel) + (y * ddsd.lPitch);
 				UINT* pPixel = reinterpret_cast<UINT*>(pPixelMemory);
 
-				if (fgImageRgb && !underwaterRgb)
+				if (resample && !underwaterRgb)
 				{
 					// Just foreground
-					*pPixel = fgImageRgb;
+					*pPixel = resample;
 				}
-				else if (fgImageRgb && underwaterRgb)
+				else if (resample && underwaterRgb)
 				{
 					// Foreground and water
 
-					// Update and load from heightmap
-					float disp = ComputeHeightmapValue(x, y);
-					disp /= 2.0f;
-					disp = max(disp, -4);
-					disp = min(disp, 4);
-
-					// Resample with heightmap applied
-					float adjustedX = x;
-					float adjustedY = y + disp;
-					UINT resample = SanitizedLoadFromRgbUINT(g_foregroundImage.ImageData, adjustedX, adjustedY);
-
 					// Blend resampled fg with a blue color
 					Color3U fgImageComponents = RgbUINTToColor3U(resample);
-					Color3F fgImageFloat = Color3UToColor3F(fgImageComponents);
-					fgImageFloat.Blend(c_waterColor, c_waterAlpha);
+					Color3F resultFloat = Color3UToColor3F(fgImageComponents);
+					resultFloat.Blend(c_waterColor, c_waterAlpha);
 
-					fgImageComponents = Color3FToColor3U(fgImageFloat);
+					Color3F tintColor = HeightmapValueToTintColor(heightmap);
+					resultFloat.Blend(tintColor, 0.1f);
+
+					Color3U underwaterComponentsU = RgbUINTToColor3U(underwaterRgb);
+					Color3F underwaterComponentsF = Color3UToColor3F(underwaterComponentsU);
+					resultFloat.Blend(underwaterComponentsF, 0.05f);
+
+					fgImageComponents = Color3FToColor3U(resultFloat);
 					UINT resultRGBA = Color3UToRgbUINT(fgImageComponents);
 
 					*pPixel = resultRGBA;
@@ -309,32 +370,80 @@ void DrawImpl(LPDIRECTDRAWSURFACE lpSurface)
 				{
 					// Just water
 
-					// Update and load from heightmap
-					float heightmap = ComputeHeightmapValue(x, y);
-					float tint = heightmap;
-
-					// tint goes from [-10, 10]
-					tint = max(tint, -10);
-					tint = min(tint, 10);
-
-					// tint goes from [0, 20]
-					tint += 10.0f;
-
-					// tint goes from [0, 1]
-					tint /= 20.0f;
-
-					// If positive heightmap, add white. If negative, add black.
-					Color3F tintColor = { tint, tint, tint };
-
 					// Load the blue color
 					Color3F water = c_waterColor;
-					water.Blend(tintColor, 0.05f);
+					Color3F tintColor = HeightmapValueToTintColor(heightmap);
+					water.Blend(tintColor, 0.15f);
+
+					Color3U underwaterComponentsU = RgbUINTToColor3U(underwaterRgb);
+					Color3F underwaterComponentsF = Color3UToColor3F(underwaterComponentsU);
+					water.Blend(underwaterComponentsF, 0.05f);
 
 					Color3U components = Color3FToColor3U(water);
 					UINT resultRGBA = Color3UToRgbUINT(components);
 					*pPixel = resultRGBA;
-
 				}
+			}
+		}
+
+		// Debug draw raindrop on top
+		for (int i = 0; i < g_raindrops.size(); ++i)
+		{
+			Raindrop& r = g_raindrops[i];
+
+			assert(r.AnimationIndex <= Raindrop::sc_actualFrameLimit);
+
+			int rainSpriteScreenLeft = r.DestX - 4;
+			int rainSpriteScreenTop = r.DestY - 64;
+
+			int logicalFrame = r.AnimationIndex / Raindrop::sc_animationRate;
+
+			for (int y = 0; y < 64; ++y)
+			{
+				for (int x = 0; x < 7; ++x)
+				{
+					int screenX = rainSpriteScreenLeft + x;
+					int screenY = rainSpriteScreenTop + y;
+
+					if (screenX < 0) continue;
+					if (screenX >= 640) continue;
+					if (screenY < 0) continue;
+					if (screenY >= 448) continue;
+
+					unsigned char* pPixelMemory = pVideoMemory + (screenX * nBytesPerPixel) + (screenY * ddsd.lPitch);
+					UINT* pPixel = reinterpret_cast<UINT*>(pPixelMemory);
+					UINT rainRgb = g_rainImage.ImageData[y * 49 + x + (logicalFrame * 7)];
+					if (rainRgb)
+					{
+						Color3U backComponents3U = RgbUINTToColor3U(*pPixel);
+						Color3F backComponents3F = Color3UToColor3F(backComponents3U);
+
+						Color3U rain3U = RgbUINTToColor3U(rainRgb);
+						Color3F rain3F = Color3UToColor3F(rain3U);
+
+						backComponents3F.Screen(rain3F);
+
+						Color3U result3U = Color3FToColor3U(backComponents3F);
+						UINT resultRGBA = Color3UToRgbUINT(result3U);
+
+						*pPixel = resultRGBA;
+					}
+				}
+			}
+
+			if (logicalFrame == Raindrop::sc_logicalFrameLimit - 1)
+			{
+				// Plot heightmap
+				g_heightMaps[g_currentHeightmapIndex][r.DestY * 640 + r.DestX] = sc_rainHeightmapInitAmount;
+
+				// Kick off raindrop in different location
+				r.AnimationIndex = 0;
+				r.DestX = rand() % 640;
+				r.DestY = rand() % 448;
+			}
+			else
+			{
+				r.AnimationIndex++;
 			}
 		}
 
@@ -378,9 +487,9 @@ int APIENTRY WinMain(HINSTANCE hInstance,
 
 	LARGE_INTEGER qpf;
 	QueryPerformanceFrequency(&qpf);
-	unsigned long int ticksPerFrame = qpf.QuadPart / 120;
-	unsigned long int ticksLastFrame = 0;
-	unsigned long int target = ticksLastFrame + ticksPerFrame;
+	unsigned long long int ticksPerFrame = qpf.QuadPart / 60;
+	unsigned long long int ticksLastFrame = 0;
+	unsigned long long int target = ticksLastFrame + ticksPerFrame;
 
 	// Main message loop:
 	while (isRunning)
@@ -391,12 +500,21 @@ int APIENTRY WinMain(HINSTANCE hInstance,
 			DispatchMessage(&msg);
 		}
 
-		LARGE_INTEGER qpc{};
-		QueryPerformanceCounter(&qpc);
-		if (qpc.QuadPart >= target)
+		if (isActive)
 		{
-			Draw();
-			target = qpc.QuadPart + ticksPerFrame;
+			LARGE_INTEGER qpc{};
+			QueryPerformanceCounter(&qpc);
+			if (qpc.QuadPart >= target)
+			{
+				g_logicalFrameCounter++;
+				if (g_logicalFrameCounter > 3)
+				{
+					g_logicalFrameCounter = 0;
+					Draw();
+				}
+
+				target = qpc.QuadPart + ticksPerFrame;
+			}
 		}
 	}
 
@@ -502,6 +620,26 @@ BOOL ExitInstance()
 	return TRUE;
 }
 
+void Plot(HWND hWnd, LPARAM lParam)
+{
+	POINT pt;
+	pt.x = GET_X_LPARAM(lParam);
+	pt.y = GET_Y_LPARAM(lParam);
+
+	RECT rect;
+	GetClientRect(hWnd, &rect);
+
+	int logicalX = pt.x * 640 / (rect.right - rect.left);
+	int logicalY = pt.y * 448 / (rect.bottom - rect.top);
+
+	if (logicalX < 0) return;
+	if (logicalX >= 640) return;
+	if (logicalY < 0) return;
+	if (logicalY >= 448) return;
+
+	g_heightMaps[g_currentHeightmapIndex][logicalY * 640 + logicalX] = sc_rainHeightmapInitAmount;
+}
+
 //
 //  FUNCTION: WndProc(HWND, unsigned, WORD, LONG)
 //
@@ -549,29 +687,27 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			break;
 		case WM_LBUTTONDOWN:
 		{
-			POINT pt;
-			pt.x = GET_X_LPARAM(lParam);
-			pt.y = GET_Y_LPARAM(lParam);
-
-			if (pt.x < 0) break;
-			if (pt.x >= 640) break;
-			if (pt.y < 0) break;
-			if (pt.y >= 448) break;
-
-			g_heightMaps[g_currentHeightmapIndex][pt.y * 640 + pt.x] = 1000;
-
+			Plot(hWnd, lParam);
+			break;
+		}
+		case WM_MOUSEMOVE:
+		{
+			if (wParam & MK_LBUTTON)
+			{
+				Plot(hWnd, lParam);
+			}
 			break;
 		}
 		case WM_ACTIVATE:
 			if( LOWORD( wParam ) == WA_INACTIVE )
 			{
 				// the user is now working with another app
-				isRunning = false;
+				isActive = false;
 			}
 			else
 			{
 				// the user has now switched back to our app
-				isRunning = true;
+				isActive = true;
 			}
 			break;
 		case WM_DESTROY:
